@@ -189,6 +189,16 @@ async  function hideAllBanners(){
     hideBanner(document.getElementById("main-banner"));
     hideBanner(document.getElementById("main-consent-banner"));
     hideBanner(document.getElementById("simple-consent-banner"));
+    // Show or hide the toggle-consent-btn based on consent state
+    const toggleConsentBtn = document.getElementById('toggle-consent-btn');
+    if (toggleConsentBtn) {
+      const consentGiven = localStorage.getItem("consent-given");
+      if (consentGiven === "true") {
+        toggleConsentBtn.style.display = "block";
+      } else {
+        toggleConsentBtn.style.display = "none";
+      }
+    }
   }
   function showAllBanners(){
     showBanner(document.getElementById("consent-banner"));
@@ -299,7 +309,7 @@ async  function hideAllBanners(){
     
       const visitorId = await getOrCreateVisitorId();
       const siteName = await cleanHostname(window.location.hostname);
-      const response = await fetch('https://cb-server-copy.web-8fb.workers.dev/api/visitor-token', {
+      const response = await fetch('https://cb-server.web-8fb.workers.dev/api/visitor-token', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -318,7 +328,7 @@ async  function hideAllBanners(){
           
           // Generate new visitor ID and retry once
           const newVisitorId = await getOrCreateVisitorId();
-          const retryResponse = await fetch('https://cb-server-copy.web-8fb.workers.dev/api/visitor-token', {
+          const retryResponse = await fetch('https://cb-server.web-8fb.workers.dev/api/visitor-token', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json'
@@ -361,7 +371,7 @@ async  function hideAllBanners(){
     if (!sessionToken) return 180;
     try {
       const siteName = window.location.hostname.replace(/^www\./, '').split('.')[0];
-      const apiUrl = `https://cb-server-copy.web-8fb.workers.dev/api/app-data?siteName=${encodeURIComponent(siteName)}`;
+      const apiUrl = `https://cb-server.web-8fb.workers.dev/api/app-data?siteName=${encodeURIComponent(siteName)}`;
       const response = await fetch(apiUrl, {
         method: "GET",
         headers: {
@@ -406,7 +416,7 @@ async  function hideAllBanners(){
       
       const siteName = window.location.hostname.replace(/^www\./, '').split('.')[0];
       
-      const apiUrl = `https://cb-server-copy.web-8fb.workers.dev/api/cmp/detect-location?siteName=${encodeURIComponent(siteName)}`;
+      const apiUrl = `https://cb-server.web-8fb.workers.dev/api/v2/cmp/detect-location?siteName=${encodeURIComponent(siteName)}`;
       
       const response = await fetch(apiUrl, {
         method: 'GET',
@@ -482,7 +492,7 @@ async  function hideAllBanners(){
         encryptedData: encryptedPayload
       };
 
-      const response = await fetch("https://cb-server-copy.web-8fb.workers.dev/api/cmp/consent", {
+      const response = await fetch("https://cb-server.web-8fb.workers.dev/api/v2/cmp/consent", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -562,7 +572,7 @@ async  function hideAllBanners(){
         return false;
       }
       const siteDomain = window.location.hostname;
-      const apiUrl = `https://cb-server-copy.web-8fb.workers.dev/api/site/subscription-status?siteDomain=${encodeURIComponent(siteDomain)}`;
+      const apiUrl = `https://cb-server.web-8fb.workers.dev/api/site/subscription-status?siteDomain=${encodeURIComponent(siteDomain)}`;
       const response = await fetch(apiUrl, {
         method: "GET",
         headers: {
@@ -761,7 +771,6 @@ async  function hideAllBanners(){
         const retryToken = await getVisitorSessionToken();
         if (!retryToken) {
           // Only reload if we absolutely can't get a token after retry
-          console.warn('Failed to get visitor token after retry, reloading page');
           setTimeout(() => location.reload(), 3000);
           return;
         }
@@ -782,7 +791,6 @@ async  function hideAllBanners(){
         return;
       }
     } catch (error) {
-      console.error('Error in token/status check:', error);
       // Don't immediately reload on error, try to continue
       clearVisitorSession();
       // Only reload if critical functionality fails
@@ -790,178 +798,128 @@ async  function hideAllBanners(){
       return;
     }
 
-    // Only show banners and run consent logic if canPublish or isStaging
-    if (canPublish || isStaging) {
-      function qid(id) { return document.getElementById(id); }
-      function qs(sel) { return document.querySelector(sel); }
-      const banners = {
-        consent: qid("consent-banner"),
-        ccpa: qid("initial-consent-banner"),
-        main: qid("main-banner")
+    // Always detect location on every load
+    const testOverride = getTestLocationOverride();
+    if (testOverride) {
+      locationData = testOverride;
+      country = testOverride.country;
+    } else {
+      locationData = await detectLocationAndGetBannerType();
+    }
+
+    const consentGiven = localStorage.getItem("consent-given");
+    let cookieDays = await fetchCookieExpirationDays();
+    const prefs = getConsentPreferences();
+    updatePreferenceForm(prefs);
+
+    // If consent is already given, hide all banners and do not show any
+    if (consentGiven === "true") {
+      await hideAllBanners();
+      // Do not show any banner unless user clicks the icon
+      return;
+    }
+
+    // Only show banners if consent not given AND location data is available
+    if (!consentGiven && locationData) {
+      if (["CCPA", "VCDPA", "CPA", "CTDPA", "UCPA"].includes(locationData.bannerType)) {
+        // US Privacy Laws: Unblock all scripts initially (opt-out model)
+        unblockScriptsWithDataCategory();
+        showBanner(document.getElementById("initial-consent-banner"));
+        hideBanner(document.getElementById("consent-banner"));
+        
+        // Force display US privacy banner
+        if (document.getElementById("initial-consent-banner")) {
+          document.getElementById("initial-consent-banner").style.display = "block";
+          document.getElementById("initial-consent-banner").style.visibility = "visible";
+          document.getElementById("initial-consent-banner").hidden = false;
+          document.getElementById("initial-consent-banner").classList.remove("hidden");
+          document.getElementById("initial-consent-banner").classList.add("show-banner");
+        }
+      } else {
+        // Show GDPR banner (default for EU and other locations)
+        showBanner(document.getElementById("consent-banner"));
+        hideBanner(document.getElementById("initial-consent-banner"));
+        blockScriptsByCategory();
+      }
+    }
+    
+    // Accept all
+    const acceptBtn = document.getElementById('accept-btn');
+    if (acceptBtn) {
+      acceptBtn.onclick = async function(e) {
+        e.preventDefault();
+        const preferences = { Analytics: true, Marketing: true, Personalization: true, donotshare: false, bannerType: locationData ? locationData.bannerType : undefined };
+        setConsentState(preferences, cookieDays);
+        
+        // Enable ALL scripts with data-category (regardless of category value)
+        enableAllScriptsWithDataCategory();
+        
+        hideBanner(document.getElementById("consent-banner"));
+        hideBanner(document.getElementById("initial-consent-banner"));
+        hideBanner(document.getElementById("main-banner"));
+        localStorage.setItem("consent-given", "true");
+        await saveConsentStateToServer(preferences, cookieDays, true); // Pass true to include userAgent
+        updatePreferenceForm(preferences);
       };
-      
-      // Detect which banner to show
-      const testOverride = getTestLocationOverride();
-      if (testOverride) {
-        locationData = testOverride;
-        country = testOverride.country;
-      } else {
-        locationData = await detectLocationAndGetBannerType();
-      }
-      
-      const consentGiven = localStorage.getItem("consent-given");
-      let cookieDays = await fetchCookieExpirationDays();
-      // On load: apply preferences if already set
-      const prefs = getConsentPreferences();
-      updatePreferenceForm(prefs);
-      
-      // Only show banners if consent not given AND location data is available
-      if (!consentGiven) {
+    }
+    // Reject all
+    const declineBtn = document.getElementById('decline-btn');
+    if (declineBtn) {
+      declineBtn.onclick = async function(e) {
+        e.preventDefault();
+        const preferences = { Analytics: false, Marketing: false, Personalization: false, donotshare: true, bannerType: locationData ? locationData.bannerType : undefined };
         
-        
-        // Show banner based on location data, with enhanced law support
-        if (locationData && ["CCPA", "VCDPA", "CPA", "CTDPA", "UCPA"].includes(locationData.bannerType)) {
-          // US Privacy Laws: Unblock all scripts initially (opt-out model)
-          console.log(`[CONSENT-FLOW] US Privacy Law detected: ${locationData.bannerType}`);
-          unblockScriptsWithDataCategory();
-          showBanner(banners.ccpa);
-          hideBanner(banners.consent);
-          
-          // Force display US privacy banner
-          if (banners.ccpa) {
-            banners.ccpa.style.display = "block";
-            banners.ccpa.style.visibility = "visible";
-            banners.ccpa.hidden = false;
-            banners.ccpa.classList.remove("hidden");
-            banners.ccpa.classList.add("show-banner");
-          }
-        } else {
-          // Show GDPR banner (default for EU and other locations)
-          
-          showBanner(banners.consent);
-          hideBanner(banners.ccpa);
-          // Initial script blocking for opt-in model
-          blockScriptsByCategory();
-        }
-      } else {
-       
-        
-        // Consent already given - apply existing preferences with enhanced law-specific logic
-        if (locationData && ["CCPA", "VCDPA", "CPA", "CTDPA", "UCPA"].includes(locationData.bannerType)) {
-          // US Privacy Laws: Apply law-specific consent handling
-          
-          if (prefs.Analytics || prefs.Marketing || prefs.Personalization) {
-            // User chose to share - unblock scripts
-            unblockScriptsWithDataCategory();
-          } else {
-            // User chose do not share - apply law-specific blocking
-            if (["VCDPA", "CPA", "CTDPA", "UCPA"].includes(locationData.bannerType)) {
-              // Enhanced privacy laws with granular opt-out requirements
-              blockTargetedAdvertisingScripts();
-              blockSaleScripts();
-              blockProfilingScripts();
-            } else {
-              // CCPA - block all scripts  
-              blockScriptsWithDataCategory();
-            }
-          }
-        } else {
-       
-          
-          if (prefs.Analytics && prefs.Marketing && prefs.Personalization) {
-            // All categories allowed - enable ALL scripts with data-category
-            enableAllScriptsWithDataCategory();
-          } else if (prefs.Analytics || prefs.Marketing || prefs.Personalization) {
-            // Some categories allowed - enable only selected categories
-            const allowedCategories = Object.keys(prefs).filter(k => prefs[k] && k !== 'bannerType');
-            enableScriptsByCategories(allowedCategories);
-          } else {
-            // No categories allowed - block all scripts
-            blockScriptsByCategory();
-          }
+        // Update Google Consent v2 to deny tracking (let Google handle privacy-preserving mode)
+        if (typeof gtag === "function") {
+          gtag('consent', 'update', {
+            'analytics_storage': 'denied',
+            'ad_storage': 'denied',
+            'ad_personalization': 'denied',
+            'ad_user_data': 'denied',
+            'personalization_storage': 'denied',
+            'functionality_storage': 'granted',
+            'security_storage': 'granted'
+          });
         }
         
-        updateGtagConsent(prefs);
-        hideBanner(banners.consent);
-        hideBanner(banners.ccpa);
-      }
-      // Accept all
-      const acceptBtn = qid('accept-btn');
-      if (acceptBtn) {
-        acceptBtn.onclick = async function(e) {
-          e.preventDefault();
-          const preferences = { Analytics: true, Marketing: true, Personalization: true, donotshare: false, bannerType: locationData ? locationData.bannerType : undefined };
-          setConsentState(preferences, cookieDays);
+        // Set consent state and block ALL scripts (including Google scripts)
+        setConsentState(preferences, cookieDays);
+        blockScriptsByCategory();
+        hideBanner(document.getElementById("consent-banner"));
+        hideBanner(document.getElementById("initial-consent-banner"));
+        hideBanner(document.getElementById("main-banner"));
+        localStorage.setItem("consent-given", "true");
+        await saveConsentStateToServer(preferences, cookieDays, false);
+        updatePreferenceForm(preferences);
+      };
+    }
+    // Do Not Share (CCPA)
+    const doNotShareBtn = document.getElementById('do-not-share-link');
+    if (doNotShareBtn) {
+      doNotShareBtn.onclick = function(e) {
+        e.preventDefault();
+        
+        // Hide initial CCPA banner with FORCE
+        const initialBanner = document.getElementById('initial-consent-banner');
+        if (initialBanner) {
+          hideBanner(initialBanner);
+        }
+        
+        // Show CCPA preference panel instead of main consent banner
+        const ccpaPreferencePanel = document.querySelector('.consentbit-ccpa_preference');
+        if (ccpaPreferencePanel) {
+          showBanner(ccpaPreferencePanel);
           
-          // Enable ALL scripts with data-category (regardless of category value)
-          enableAllScriptsWithDataCategory();
-          
-          hideBanner(banners.consent);
-          hideBanner(banners.ccpa);
-          hideBanner(banners.main);
-          localStorage.setItem("consent-given", "true");
-          await saveConsentStateToServer(preferences, cookieDays, true); // Pass true to include userAgent
-          updatePreferenceForm(preferences);
-        };
-      }
-      // Reject all
-      const declineBtn = qid('decline-btn');
-      if (declineBtn) {
-        declineBtn.onclick = async function(e) {
-          e.preventDefault();
-          const preferences = { Analytics: false, Marketing: false, Personalization: false, donotshare: true, bannerType: locationData ? locationData.bannerType : undefined };
-          
-          // Update Google Consent v2 to deny tracking (let Google handle privacy-preserving mode)
-          if (typeof gtag === "function") {
-            gtag('consent', 'update', {
-              'analytics_storage': 'denied',
-              'ad_storage': 'denied',
-              'ad_personalization': 'denied',
-              'ad_user_data': 'denied',
-              'personalization_storage': 'denied',
-              'functionality_storage': 'granted',
-              'security_storage': 'granted'
-            });
-          }
-          
-          // Set consent state and block ALL scripts (including Google scripts)
-          setConsentState(preferences, cookieDays);
-          blockScriptsByCategory();
-          hideBanner(banners.consent);
-          hideBanner(banners.ccpa);
-          hideBanner(banners.main);
-          localStorage.setItem("consent-given", "true");
-          await saveConsentStateToServer(preferences, cookieDays, false);
-          updatePreferenceForm(preferences);
-        };
-      }
-      // Do Not Share (CCPA)
-      const doNotShareBtn = qid('do-not-share-link');
-      if (doNotShareBtn) {
-        doNotShareBtn.onclick = function(e) {
-          e.preventDefault();
-          
-          // Hide initial CCPA banner with FORCE
-          const initialBanner = document.getElementById('initial-consent-banner');
-          if (initialBanner) {
-            hideBanner(initialBanner);
-          }
-          
-          // Show main consent banner with force
-          const mainBanner = document.getElementById('main-consent-banner');
-          if (mainBanner) {
-            showBanner(mainBanner);
-            
-            // Update CCPA preference form with saved preferences
-            updateCCPAPreferenceForm(getConsentPreferences());
-          }
-        };
-      }
-      
-      // CCPA Preference Accept button
-      const ccpaPreferenceAcceptBtn = document.getElementById('consebit-ccpa-prefrence-accept');
+          // Update CCPA preference form with saved preferences
+          updateCCPAPreferenceForm(getConsentPreferences());
+        }
+      };
+    }
+    
+    // CCPA Preference Accept button
+    const ccpaPreferenceAcceptBtn = document.getElementById('consebit-ccpa-prefrence-accept');
   
-      if (ccpaPreferenceAcceptBtn) {
+    if (ccpaPreferenceAcceptBtn) {
 ccpaPreferenceAcceptBtn.onclick = async function(e) {
   e.preventDefault();
   
@@ -982,7 +940,6 @@ ccpaPreferenceAcceptBtn.onclick = async function(e) {
     // Apply law-specific blocking based on banner type
     if (locationData && ["VCDPA", "CPA", "CTDPA", "UCPA"].includes(locationData.bannerType)) {
       // Enhanced privacy laws with granular opt-out requirements
-      console.log(`[CONSENT-FLOW] Applying granular blocking for ${locationData.bannerType}`);
       blockTargetedAdvertisingScripts();
       blockSaleScripts();
       blockProfilingScripts();
@@ -990,7 +947,6 @@ ccpaPreferenceAcceptBtn.onclick = async function(e) {
       blockAutomatedDecisionScripts();
     } else {
       // CCPA - block all scripts  
-      console.log('[CONSENT-FLOW] Applying CCPA script blocking');
       blockScriptsWithDataCategory();
       blockNonGoogleScripts();
     }
@@ -1011,7 +967,7 @@ ccpaPreferenceAcceptBtn.onclick = async function(e) {
   setConsentState(preferences, cookieDays);
   
   // Hide banners
-  hideBanner(banners.ccpa);
+  hideBanner(document.getElementById("initial-consent-banner"));
   const ccpaPreferencePanel = document.querySelector('.consentbit-ccpa_preference');
   hideBanner(ccpaPreferencePanel);
   const ccpaBannerDiv = document.querySelector('.consentbit-ccpa-banner-div');
@@ -1047,7 +1003,7 @@ ccpaPreferenceAcceptBtn.onclick = async function(e) {
           blockScriptsByCategory();
           
           // Hide both CCPA banners using hideBanner function
-          hideBanner(banners.ccpa);
+          hideBanner(document.getElementById("initial-consent-banner"));
           const ccpaPreferencePanel = document.querySelector('.consentbit-ccpa_preference');
           hideBanner(ccpaPreferencePanel);
           const ccpaBannerDiv = document.querySelector('.consentbit-ccpa-banner-div');
@@ -1063,7 +1019,7 @@ ccpaPreferenceAcceptBtn.onclick = async function(e) {
       }
       
       // Save button (CCPA)
-      const saveBtn = qid('save-btn');
+      const saveBtn = document.getElementById('save-btn');
       if (saveBtn) {
         saveBtn.onclick = async function(e) {
           e.preventDefault();
@@ -1128,24 +1084,24 @@ ccpaPreferenceAcceptBtn.onclick = async function(e) {
       }
       
       // Preferences button (show preferences panel)
-      const preferencesBtn = qid('preferences-btn');
+      const preferencesBtn = document.getElementById('preferences-btn');
       if (preferencesBtn) {
         preferencesBtn.onclick = function(e) {
           e.preventDefault();
-          hideBanner(banners.consent);
-          showBanner(banners.main);
+          hideBanner(document.getElementById("consent-banner"));
+          showBanner(document.getElementById("main-banner"));
           updatePreferenceForm(getConsentPreferences());
         };
       }
       // Save Preferences button
-      const savePreferencesBtn = qid('save-preferences-btn');
+      const savePreferencesBtn = document.getElementById('save-preferences-btn');
       if (savePreferencesBtn) {
         savePreferencesBtn.onclick = async function(e) {
           e.preventDefault();
           // Read checkboxes
-          const analytics = !!qs('[data-consent-id="analytics-checkbox"]:checked');
-          const marketing = !!qs('[data-consent-id="marketing-checkbox"]:checked');
-          const personalization = !!qs('[data-consent-id="personalization-checkbox"]:checked');
+          const analytics = !!document.querySelector('[data-consent-id="analytics-checkbox"]:checked');
+          const marketing = !!document.querySelector('[data-consent-id="marketing-checkbox"]:checked');
+          const personalization = !!document.querySelector('[data-consent-id="personalization-checkbox"]:checked');
           const preferences = {
             Analytics: analytics,
             Marketing: marketing,
@@ -1160,9 +1116,9 @@ ccpaPreferenceAcceptBtn.onclick = async function(e) {
           if (selectedCategories.length > 0) {
             enableScriptsByCategories(selectedCategories);
           }
-          hideBanner(banners.main);
-          hideBanner(banners.consent);
-          hideBanner(banners.ccpa);
+          hideBanner(document.getElementById("main-banner"));
+          hideBanner(document.getElementById("consent-banner"));
+          hideBanner(document.getElementById("initial-consent-banner"));
           localStorage.setItem("consent-given", "true");
           await saveConsentStateToServer(preferences, cookieDays, true); // Include userAgent for preferences
           updatePreferenceForm(preferences);
@@ -1171,7 +1127,7 @@ ccpaPreferenceAcceptBtn.onclick = async function(e) {
 
 
    // Cancel button (go back to main banner)
-   const cancelGDPRBtn = qid('cancel-btn');
+   const cancelGDPRBtn = document.getElementById('cancel-btn');
    if (cancelGDPRBtn) {
     cancelGDPRBtn.onclick = async function(e) {
        e.preventDefault();
@@ -1201,9 +1157,9 @@ ccpaPreferenceAcceptBtn.onclick = async function(e) {
        }
        
        // STEP 3: Uncheck all preference checkboxes
-       const analyticsCheckbox = qs('[data-consent-id="analytics-checkbox"]');
-       const marketingCheckbox = qs('[data-consent-id="marketing-checkbox"]');
-       const personalizationCheckbox = qs('[data-consent-id="personalization-checkbox"]');
+       const analyticsCheckbox = document.querySelector('[data-consent-id="analytics-checkbox"]');
+       const marketingCheckbox = document.querySelector('[data-consent-id="marketing-checkbox"]');
+       const personalizationCheckbox = document.querySelector('[data-consent-id="personalization-checkbox"]');
        
        if (analyticsCheckbox) {
          analyticsCheckbox.checked = false;
@@ -1236,14 +1192,14 @@ ccpaPreferenceAcceptBtn.onclick = async function(e) {
        }
        
        // STEP 6: Hide banners
-       hideBanner(banners.main);
-       hideBanner(banners.consent);
+       hideBanner(document.getElementById("main-banner"));
+       hideBanner(document.getElementById("consent-banner"));
      };
     }
 
 
       // Cancel button (go back to main banner)
-      const cancelBtn = qid('close-consent-banner');
+      const cancelBtn = document.getElementById('close-consent-banner');
       if (cancelBtn) {
         cancelBtn.onclick = async function(e) {
           e.preventDefault();
@@ -1272,7 +1228,7 @@ ccpaPreferenceAcceptBtn.onclick = async function(e) {
           showBanner(ccpaBannerDiv);
           
           // Also show the CCPA banner if it exists
-          showBanner(banners.ccpa);
+          showBanner(document.getElementById("initial-consent-banner"));
         };
       }
       
@@ -1281,193 +1237,183 @@ ccpaPreferenceAcceptBtn.onclick = async function(e) {
       
       // Load consent styles after banners are shown
       loadConsentStyles();
-    
+  });
   
-    } 
- }); // End DOMContentLoaded event listener
+ // End DOMContentLoaded event listener
 
-  // --- CCPA-specific script handling functions ---
-  function unblockScriptsWithDataCategory() {
-    // CCPA: Unblock ALL scripts with data-category attribute (including Google scripts) only in head section
-    var scripts = document.head.querySelectorAll('script[type="text/plain"][data-category]');
-    scripts.forEach(function(oldScript) {
-      var newScript = document.createElement('script');
-      for (var i = 0; i < oldScript.attributes.length; i++) {
-        var attr = oldScript.attributes[i];
-        if (attr.name === 'type') {
-          newScript.type = 'text/javascript';
-        } else if (attr.name !== 'data-blocked-by-ccpa') {
-          newScript.setAttribute(attr.name, attr.value);
+    // --- CCPA-specific script handling functions ---
+    function unblockScriptsWithDataCategory() {
+      // CCPA: Unblock ALL scripts with data-category attribute (including Google scripts) only in head section
+      var scripts = document.head.querySelectorAll('script[type="text/plain"][data-category]');
+      scripts.forEach(function(oldScript) {
+        var newScript = document.createElement('script');
+        for (var i = 0; i < oldScript.attributes.length; i++) {
+          var attr = oldScript.attributes[i];
+          if (attr.name === 'type') {
+            newScript.type = 'text/javascript';
+          } else if (attr.name !== 'data-blocked-by-ccpa') {
+            newScript.setAttribute(attr.name, attr.value);
+          }
         }
-      }
-      if (oldScript.innerHTML) {
-        newScript.innerHTML = oldScript.innerHTML;
-      }
-      oldScript.parentNode.replaceChild(newScript, oldScript);
-    });
-  }
+        if (oldScript.innerHTML) {
+          newScript.innerHTML = oldScript.innerHTML;
+        }
+        oldScript.parentNode.replaceChild(newScript, oldScript);
+      });
+    }
    
-  function blockScriptsWithDataCategory() {
-    // CCPA: Block ALL scripts with data-category attribute (including Google scripts) only in head section
-    var scripts = document.head.querySelectorAll('script[data-category]');
-    scripts.forEach(function(script) {
+    function blockScriptsWithDataCategory() {
+      // CCPA: Block ALL scripts with data-category attribute (including Google scripts) only in head section
+      var scripts = document.head.querySelectorAll('script[data-category]');
+      scripts.forEach(function(script) {
+        if (script.type !== 'text/plain') {
+          script.type = 'text/plain';
+          script.setAttribute('data-blocked-by-ccpa', 'true');
+        }
+      });
+    }
+  
+async function hashStringSHA256(str) {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(str);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function scanAndSendHeadScriptsIfChanged(sessionToken) {
+  const headScripts = document.head.querySelectorAll('script');
+  const scriptData = Array.from(headScripts).map(script => ({
+    src: script.src || null,
+    content: script.src ? null : script.innerHTML,
+    dataCategory: script.getAttribute('data-category') || null
+  }));
+  const scriptDataString = JSON.stringify(scriptData);
+  const scriptDataHash = await hashStringSHA256(scriptDataString);
+
+  const cachedHash = localStorage.getItem('headScriptsHash');
+if (cachedHash !== scriptDataHash) {
+}
+  if (cachedHash === scriptDataHash) {
+    return; // No change, do nothing
+  }
+
+  try {
+    const encryptedScriptData = await encryptWithHardcodedKey(scriptDataString);
+    
+    // Get siteName from hostname
+    const siteName = window.location.hostname.replace(/^www\./, '').split('.')[0];
+    
+    // Build API URL with siteName parameter
+    const apiUrl = `https://cb-server.web-8fb.workers.dev/api/v2/cmp/head-scripts?siteName=${encodeURIComponent(siteName)}`;
+    
+    const response = await fetch(apiUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${sessionToken}`,
+      },
+      body: JSON.stringify({ encryptedData: encryptedScriptData }),
+    });
+    
+    if (response.ok) {
+      localStorage.setItem('headScriptsHash', scriptDataHash);
+    } else {
+      console.error('Failed to send head scripts to API:', response.status);
+    }
+  } catch (e) {
+    console.error('Error sending head scripts to API:', e);
+  }
+}
+
+function blockNonGoogleScripts() {
+  // Block all scripts (including Google scripts) only in head section
+  var scripts = document.head.querySelectorAll('script[src]');
+  scripts.forEach(function(script) {
+      if (script.type !== 'text/plain') {
+          script.type = 'text/plain';
+          script.setAttribute('data-blocked-by-consent', 'true');
+      }
+  });
+
+  // Block inline scripts only in head section
+  var inlineScripts = document.head.querySelectorAll('script:not([src])');
+  inlineScripts.forEach(function(script) {
+      if (script.innerHTML && script.type !== 'text/plain') {
+          script.type = 'text/plain';
+          script.setAttribute('data-blocked-by-consent', 'true');
+      }
+  });
+}
+ 
+
+
+function blockTargetedAdvertisingScripts() {
+  const targetedAdvertisingPatterns = /facebook|meta|fbevents|linkedin|twitter|pinterest|tiktok|snap|reddit|quora|outbrain|taboola|sharethrough|doubleclick|adwords|adsense|adservice|pixel|quantserve|scorecardresearch|moat|integral-marketing|comscore|nielsen|quantcast|adobe/i;
+  
+  const scripts = document.head.querySelectorAll('script[src]');
+  scripts.forEach(script => {
+    if (targetedAdvertisingPatterns.test(script.src)) {
       if (script.type !== 'text/plain') {
         script.type = 'text/plain';
-        script.setAttribute('data-blocked-by-ccpa', 'true');
+        script.setAttribute('data-blocked-by-targeted-advertising', 'true');
       }
-    });
-  }
-  
-  async function hashStringSHA256(str) {
-    const encoder = new TextEncoder();
-    const data = encoder.encode(str);
-    const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-    return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
-  }
-
-  async function scanAndSendHeadScriptsIfChanged(sessionToken) {
-    const headScripts = document.head.querySelectorAll('script');
-    const scriptData = Array.from(headScripts).map(script => ({
-      src: script.src || null,
-      content: script.src ? null : script.innerHTML,
-      dataCategory: script.getAttribute('data-category') || null
-    }));
-    const scriptDataString = JSON.stringify(scriptData);
-    const scriptDataHash = await hashStringSHA256(scriptDataString);
-
-    const cachedHash = localStorage.getItem('headScriptsHash');
-    console.log('Current scriptDataHash:', scriptDataHash);
-console.log('Cached hash:', cachedHash);
-if (cachedHash !== scriptDataHash) {
-  console.log('Hash changed, sending POST to /api/cmp/head-scripts');
+    }
+  });
 }
-    if (cachedHash === scriptDataHash) {
-      return; // No change, do nothing
-    }
 
-    try {
-      const encryptedScriptData = await encryptWithHardcodedKey(scriptDataString);
-      
-      // Get siteName from hostname
-      const siteName = window.location.hostname.replace(/^www\./, '').split('.')[0];
-      
-      // Build API URL with siteName parameter
-      const apiUrl = `https://cb-server-copy.web-8fb.workers.dev/api/cmp/head-scripts?siteName=${encodeURIComponent(siteName)}`;
-      
-      const response = await fetch(apiUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${sessionToken}`,
-        },
-        body: JSON.stringify({ encryptedData: encryptedScriptData }),
-      });
-      
-      if (response.ok) {
-        localStorage.setItem('headScriptsHash', scriptDataHash);
-        console.log('Head scripts processed and cached successfully');
-      } else {
-        console.error('Failed to send head scripts to API:', response.status);
-      }
-    } catch (e) {
-      console.error('Error sending head scripts to API:', e);
-    }
-  }
-
-  function blockNonGoogleScripts() {
-    // Block all scripts (including Google scripts) only in head section
-    var scripts = document.head.querySelectorAll('script[src]');
-    scripts.forEach(function(script) {
-        if (script.type !== 'text/plain') {
-            script.type = 'text/plain';
-            script.setAttribute('data-blocked-by-consent', 'true');
-        }
-    });
-
-    // Block inline scripts only in head section
-    var inlineScripts = document.head.querySelectorAll('script:not([src])');
-    inlineScripts.forEach(function(script) {
-        if (script.innerHTML && script.type !== 'text/plain') {
-            script.type = 'text/plain';
-            script.setAttribute('data-blocked-by-consent', 'true');
-        }
-    });
-  }
-
-
-   // --- Advanced Script Blocking Functions for US Privacy Laws ---
+function blockSaleScripts() {
+  const salePatterns = /facebook|meta|fbevents|linkedin|twitter|pinterest|tiktok|snap|reddit|quora|outbrain|taboola|sharethrough|doubleclick|adwords|adsense|adservice|pixel|quantserve|scorecardresearch|moat|integral-marketing|comscore|nielsen|quantcast|adobe|marketo|hubspot|salesforce|pardot|eloqua|act-on|mailchimp|constantcontact|sendgrid|klaviyo|braze|iterable/i;
   
-
-
-
-
-  function blockTargetedAdvertisingScripts() {
-    const targetedAdvertisingPatterns = /facebook|meta|fbevents|linkedin|twitter|pinterest|tiktok|snap|reddit|quora|outbrain|taboola|sharethrough|doubleclick|adwords|adsense|adservice|pixel|quantserve|scorecardresearch|moat|integral-marketing|comscore|nielsen|quantcast|adobe/i;
-    
-    const scripts = document.head.querySelectorAll('script[src]');
-    scripts.forEach(script => {
-      if (targetedAdvertisingPatterns.test(script.src)) {
-        if (script.type !== 'text/plain') {
-          script.type = 'text/plain';
-          script.setAttribute('data-blocked-by-targeted-advertising', 'true');
-        }
+  const scripts = document.head.querySelectorAll('script[src]');
+  scripts.forEach(script => {
+    if (salePatterns.test(script.src)) {
+      if (script.type !== 'text/plain') {
+        script.type = 'text/plain';
+        script.setAttribute('data-blocked-by-sale', 'true');
       }
-    });
-  }
+    }
+  });
+}
 
-  function blockSaleScripts() {
-    const salePatterns = /facebook|meta|fbevents|linkedin|twitter|pinterest|tiktok|snap|reddit|quora|outbrain|taboola|sharethrough|doubleclick|adwords|adsense|adservice|pixel|quantserve|scorecardresearch|moat|integral-marketing|comscore|nielsen|quantcast|adobe|marketo|hubspot|salesforce|pardot|eloqua|act-on|mailchimp|constantcontact|sendgrid|klaviyo|braze|iterable/i;
-    
-    const scripts = document.head.querySelectorAll('script[src]');
-    scripts.forEach(script => {
-      if (salePatterns.test(script.src)) {
-        if (script.type !== 'text/plain') {
-          script.type = 'text/plain';
-          script.setAttribute('data-blocked-by-sale', 'true');
-        }
+function blockProfilingScripts() {
+  const profilingPatterns = /optimizely|hubspot|marketo|pardot|salesforce|intercom|drift|zendesk|freshchat|tawk|livechat|clarity|hotjar|mouseflow|fullstory|logrocket|mixpanel|segment|amplitude|heap|kissmetrics|matomo|piwik|plausible|woopra|crazyegg|clicktale|chartbeat|parse\.ly/i;
+  
+  const scripts = document.head.querySelectorAll('script[src]');
+  scripts.forEach(script => {
+    if (profilingPatterns.test(script.src)) {
+      if (script.type !== 'text/plain') {
+        script.type = 'text/plain';
+        script.setAttribute('data-blocked-by-profiling', 'true');
       }
-    });
-  }
+    }
+  });
+}
 
-  function blockProfilingScripts() {
-    const profilingPatterns = /optimizely|hubspot|marketo|pardot|salesforce|intercom|drift|zendesk|freshchat|tawk|livechat|clarity|hotjar|mouseflow|fullstory|logrocket|mixpanel|segment|amplitude|heap|kissmetrics|matomo|piwik|plausible|woopra|crazyegg|clicktale|chartbeat|parse\.ly/i;
-    
-    const scripts = document.head.querySelectorAll('script[src]');
-    scripts.forEach(script => {
-      if (profilingPatterns.test(script.src)) {
-        if (script.type !== 'text/plain') {
-          script.type = 'text/plain';
-          script.setAttribute('data-blocked-by-profiling', 'true');
-        }
+function blockCrossContextBehavioralAdvertising() {
+  const crossContextPatterns = /facebook|meta|fbevents|linkedin|twitter|pinterest|tiktok|snap|reddit|quora|outbrain|taboola|sharethrough|doubleclick|adwords|adsense|adservice|pixel|quantserve|scorecardresearch|moat|integral-marketing|comscore|nielsen|quantcast|adobe/i;
+  
+  const scripts = document.head.querySelectorAll('script[src]');
+  scripts.forEach(script => {
+    if (crossContextPatterns.test(script.src)) {
+      if (script.type !== 'text/plain') {
+        script.type = 'text/plain';
+        script.setAttribute('data-blocked-by-cross-context', 'true');
       }
-    });
-  }
+    }
+  });
+}
 
-  function blockCrossContextBehavioralAdvertising() {
-    const crossContextPatterns = /facebook|meta|fbevents|linkedin|twitter|pinterest|tiktok|snap|reddit|quora|outbrain|taboola|sharethrough|doubleclick|adwords|adsense|adservice|pixel|quantserve|scorecardresearch|moat|integral-marketing|comscore|nielsen|quantcast|adobe/i;
-    
-    const scripts = document.head.querySelectorAll('script[src]');
-    scripts.forEach(script => {
-      if (crossContextPatterns.test(script.src)) {
-        if (script.type !== 'text/plain') {
-          script.type = 'text/plain';
-          script.setAttribute('data-blocked-by-cross-context', 'true');
-        }
+function blockAutomatedDecisionScripts() {
+  const automatedDecisionPatterns = /optimizely|hubspot|marketo|pardot|salesforce|intercom|drift|zendesk|freshchat|tawk|livechat|clarity|hotjar|mouseflow|fullstory|logrocket|mixpanel|segment|amplitude|heap|kissmetrics|matomo|piwik|plausible|woopra|crazyegg|clicktale|chartbeat|parse\.ly/i;
+  
+  const scripts = document.head.querySelectorAll('script[src]');
+  scripts.forEach(script => {
+    if (automatedDecisionPatterns.test(script.src)) {
+      if (script.type !== 'text/plain') {
+        script.type = 'text/plain';
+        script.setAttribute('data-blocked-by-automated-decision', 'true');
       }
-    });
-  }
-
-  function blockAutomatedDecisionScripts() {
-    const automatedDecisionPatterns = /optimizely|hubspot|marketo|pardot|salesforce|intercom|drift|zendesk|freshchat|tawk|livechat|clarity|hotjar|mouseflow|fullstory|logrocket|mixpanel|segment|amplitude|heap|kissmetrics|matomo|piwik|plausible|woopra|crazyegg|clicktale|chartbeat|parse\.ly/i;
-    
-    const scripts = document.head.querySelectorAll('script[src]');
-    scripts.forEach(script => {
-      if (automatedDecisionPatterns.test(script.src)) {
-        if (script.type !== 'text/plain') {
-          script.type = 'text/plain';
-          script.setAttribute('data-blocked-by-automated-decision', 'true');
-        }
-      }
-    });
-  }
+    }
+  });
+}
 })(); 
