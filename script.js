@@ -54,6 +54,35 @@
     });
   }
 
+  function ensureGtagInitialization() {
+    // Ensure dataLayer exists
+    window.dataLayer = window.dataLayer || [];
+    
+    // Ensure gtag function exists
+    if (typeof window.gtag === 'undefined') {
+      window.gtag = function() { 
+        window.dataLayer.push(arguments); 
+      };
+    }
+    
+    // Check if Google Tag Manager script is loaded and working
+    const gtmScripts = document.querySelectorAll('script[src*="googletagmanager"]');
+    if (gtmScripts.length > 0) {
+      // Force a pageview or consent update to ensure gtag is working
+      if (typeof window.gtag === 'function') {
+        try {
+          // Send a test event to ensure gtag is working
+          window.gtag('event', 'consent_scripts_enabled', {
+            'event_category': 'consent',
+            'event_label': 'scripts_re_enabled'
+          });
+        } catch (e) {
+          // gtag might not be fully initialized yet
+        }
+      }
+    }
+  }
+
   function blockScriptsByCategory() {
     // First remove any duplicate scripts
     removeDuplicateScripts();
@@ -123,7 +152,8 @@
             console.error('[CONSENT] Failed to load script:', script.src);
           };
           newScript.onload = function() {
-            // Script loaded successfully
+            // Script loaded successfully - ensure gtag is available
+            ensureGtagInitialization();
           };
           
           // Insert the new script before the old one, then remove the old one
@@ -146,6 +176,9 @@
     
     // Remove any duplicates that might have been created
     removeDuplicateScripts();
+    
+    // Ensure gtag is properly initialized after all scripts are loaded
+    setTimeout(ensureGtagInitialization, 100);
   }
   function enableScriptsByCategories(allowedCategories) {
     // Enable scripts based on categories (including Google scripts) in head section only
@@ -162,17 +195,51 @@
           });
         });
         if (shouldEnable) {
-          // Simply change the type back to text/javascript instead of creating new element
-          script.type = 'text/javascript';
-          script.removeAttribute('data-blocked-by-consent');
-          script.removeAttribute('data-blocked-by-ccpa');
-          
-          // Execute the script if it has inline content
-          if (script.innerHTML) {
+          // Re-execute the script if it has a src attribute
+          if (script.src) {
             try {
-              eval(script.innerHTML);
-            } catch (e) {
-              console.warn('Error executing re-enabled script:', e);
+              // Check if a script with this src already exists and is enabled
+              const existingScript = document.querySelector(`script[src="${script.src}"][type="text/javascript"]`);
+              if (existingScript) {
+                // Just remove the blocked version
+                script.remove();
+                return;
+              }
+              
+              // Create a new script element to force re-execution
+              const newScript = document.createElement('script');
+              
+              // Copy all attributes except blocking ones
+              for (let attr of script.attributes) {
+                if (attr.name !== 'type' && 
+                    attr.name !== 'data-blocked-by-consent' && 
+                    attr.name !== 'data-blocked-by-ccpa') {
+                  newScript.setAttribute(attr.name, attr.value);
+                }
+              }
+              
+              // Ensure proper type
+              newScript.type = 'text/javascript';
+              
+              // Insert the new script before the old one, then remove the old one
+              script.parentNode.insertBefore(newScript, script);
+              script.remove();
+            } catch (error) {
+              console.error('[CONSENT] Error re-executing script:', script.src, error);
+            }
+          } else {
+            // For inline scripts, just change the type
+            script.type = 'text/javascript';
+            script.removeAttribute('data-blocked-by-consent');
+            script.removeAttribute('data-blocked-by-ccpa');
+            
+            // Execute the script if it has inline content
+            if (script.innerHTML) {
+              try {
+                eval(script.innerHTML);
+              } catch (e) {
+                console.warn('Error executing re-enabled script:', e);
+              }
             }
           }
         }
@@ -181,6 +248,9 @@
     
     // Remove any duplicates that might have been created
     removeDuplicateScripts();
+    
+    // Ensure gtag is properly initialized after all scripts are loaded
+    setTimeout(ensureGtagInitialization, 100);
   }
   function updateGtagConsent(preferences) {
     if (typeof gtag === "function") {
@@ -1530,48 +1600,86 @@
           var allBlockedScripts = document.head.querySelectorAll('script[type="text/plain"][data-category]');
         
         allBlockedScripts.forEach(function (script) {
-          // Simply change the type back to text/javascript instead of creating new element
-          script.type = 'text/javascript';
-          script.removeAttribute('data-blocked-by-consent');
-          script.removeAttribute('data-blocked-by-ccpa');
-          
           // Re-execute the script if it has a src attribute
           if (script.src) {
-            // Create a new script element to force re-execution
-            const newScript = document.createElement('script');
-            // Copy all attributes except type
-            for (let attr of script.attributes) {
-              if (attr.name !== 'type' && attr.name !== 'data-blocked-by-consent' && attr.name !== 'data-blocked-by-ccpa') {
-                newScript.setAttribute(attr.name, attr.value);
+            try {
+              // Check if a script with this src already exists and is enabled
+              const existingScript = document.querySelector(`script[src="${script.src}"][type="text/javascript"]`);
+              if (existingScript) {
+                // Just remove the blocked version
+                script.remove();
+                return;
               }
+              
+              // Create a new script element to force re-execution
+              const newScript = document.createElement('script');
+              
+              // Copy all attributes except blocking ones
+              for (let attr of script.attributes) {
+                if (attr.name !== 'type' && 
+                    attr.name !== 'data-blocked-by-consent' && 
+                    attr.name !== 'data-blocked-by-ccpa') {
+                  newScript.setAttribute(attr.name, attr.value);
+                }
+              }
+              
+              // Ensure proper type
+              newScript.type = 'text/javascript';
+              
+              // Insert the new script before the old one, then remove the old one
+              script.parentNode.insertBefore(newScript, script);
+              script.remove();
+            } catch (error) {
+              console.error('[CONSENT] Error re-executing script:', script.src, error);
             }
-            newScript.type = 'text/javascript';
-            // Replace the old script with the new one
-            script.parentNode.replaceChild(newScript, script);
+          } else {
+            // For inline scripts, just change the type
+            script.type = 'text/javascript';
+            script.removeAttribute('data-blocked-by-consent');
+            script.removeAttribute('data-blocked-by-ccpa');
           }
         });
 
         // Also unblock any scripts that might have been blocked by initial blocking
         var allBlockedScripts2 = document.head.querySelectorAll('script[type="text/plain"]');
         allBlockedScripts2.forEach(function (script) {
-          // Simply change the type back to text/javascript instead of creating new element
-          script.type = 'text/javascript';
-          script.removeAttribute('data-blocked-by-consent');
-          script.removeAttribute('data-blocked-by-ccpa');
-          
           // Re-execute the script if it has a src attribute
           if (script.src) {
-            // Create a new script element to force re-execution
-            const newScript = document.createElement('script');
-            // Copy all attributes except type
-            for (let attr of script.attributes) {
-              if (attr.name !== 'type' && attr.name !== 'data-blocked-by-consent' && attr.name !== 'data-blocked-by-ccpa') {
-                newScript.setAttribute(attr.name, attr.value);
+            try {
+              // Check if a script with this src already exists and is enabled
+              const existingScript = document.querySelector(`script[src="${script.src}"][type="text/javascript"]`);
+              if (existingScript) {
+                // Just remove the blocked version
+                script.remove();
+                return;
               }
+              
+              // Create a new script element to force re-execution
+              const newScript = document.createElement('script');
+              
+              // Copy all attributes except blocking ones
+              for (let attr of script.attributes) {
+                if (attr.name !== 'type' && 
+                    attr.name !== 'data-blocked-by-consent' && 
+                    attr.name !== 'data-blocked-by-ccpa') {
+                  newScript.setAttribute(attr.name, attr.value);
+                }
+              }
+              
+              // Ensure proper type
+              newScript.type = 'text/javascript';
+              
+              // Insert the new script before the old one, then remove the old one
+              script.parentNode.insertBefore(newScript, script);
+              script.remove();
+            } catch (error) {
+              console.error('[CONSENT] Error re-executing script:', script.src, error);
             }
-            newScript.type = 'text/javascript';
-            // Replace the old script with the new one
-            script.parentNode.replaceChild(newScript, script);
+          } else {
+            // For inline scripts, just change the type
+            script.type = 'text/javascript';
+            script.removeAttribute('data-blocked-by-consent');
+            script.removeAttribute('data-blocked-by-ccpa');
           }
         });
 
@@ -1603,19 +1711,56 @@
     // CCPA: Unblock ALL scripts with data-category attribute (including Google scripts) in head section only
     var scripts = document.head.querySelectorAll('script[type="text/plain"][data-category]');
     scripts.forEach(function (script) {
-      // Simply change the type back to text/javascript instead of creating new element
-      script.type = 'text/javascript';
-      script.removeAttribute('data-blocked-by-ccpa');
-      
-      // Execute the script if it has inline content
-      if (script.innerHTML) {
+      // Re-execute the script if it has a src attribute
+      if (script.src) {
         try {
-          eval(script.innerHTML);
-        } catch (e) {
-          console.warn('Error executing re-enabled script:', e);
+          // Check if a script with this src already exists and is enabled
+          const existingScript = document.querySelector(`script[src="${script.src}"][type="text/javascript"]`);
+          if (existingScript) {
+            // Just remove the blocked version
+            script.remove();
+            return;
+          }
+          
+          // Create a new script element to force re-execution
+          const newScript = document.createElement('script');
+          
+          // Copy all attributes except blocking ones
+          for (let attr of script.attributes) {
+            if (attr.name !== 'type' && 
+                attr.name !== 'data-blocked-by-consent' && 
+                attr.name !== 'data-blocked-by-ccpa') {
+              newScript.setAttribute(attr.name, attr.value);
+            }
+          }
+          
+          // Ensure proper type
+          newScript.type = 'text/javascript';
+          
+          // Insert the new script before the old one, then remove the old one
+          script.parentNode.insertBefore(newScript, script);
+          script.remove();
+        } catch (error) {
+          console.error('[CONSENT] Error re-executing script:', script.src, error);
+        }
+      } else {
+        // For inline scripts, just change the type
+        script.type = 'text/javascript';
+        script.removeAttribute('data-blocked-by-ccpa');
+        
+        // Execute the script if it has inline content
+        if (script.innerHTML) {
+          try {
+            eval(script.innerHTML);
+          } catch (e) {
+            console.warn('Error executing re-enabled script:', e);
+          }
         }
       }
     });
+    
+    // Ensure gtag is properly initialized after all scripts are loaded
+    setTimeout(ensureGtagInitialization, 100);
   }
 
   function blockScriptsWithDataCategory() {
@@ -1783,57 +1928,5 @@
       }
     });
   }
-
-
-
-  function checkSpecificScripts() {
-    console.log('[CONSENT] === CHECKING SPECIFIC SCRIPTS ===');
-    
-    // Check for gtag scripts
-    const gtagScripts = document.head.querySelectorAll('script[src*="googletagmanager"]');
-    console.log('[CONSENT] Found', gtagScripts.length, 'gtag scripts:');
-    gtagScripts.forEach(function(script, index) {
-      console.log(`[CONSENT] Gtag script ${index}:`, {
-        src: script.src,
-        type: script.type,
-        isBlocked: script.type === 'text/plain',
-        hasDataCategory: !!script.getAttribute('data-category')
-      });
-    });
-    
-    // Check for Google Analytics
-    const gaScripts = document.head.querySelectorAll('script[src*="google-analytics"]');
-    console.log('[CONSENT] Found', gaScripts.length, 'Google Analytics scripts:');
-    gaScripts.forEach(function(script, index) {
-      console.log(`[CONSENT] GA script ${index}:`, {
-        src: script.src,
-        type: script.type,
-        isBlocked: script.type === 'text/plain'
-      });
-    });
-    
-    // Check for dataLayer
-    console.log('[CONSENT] window.dataLayer exists:', !!window.dataLayer);
-    console.log('[CONSENT] window.gtag exists:', !!window.gtag);
-    
-    // Check for other common analytics
-    const analyticsScripts = document.head.querySelectorAll('script[src*="analytics"], script[src*="tracking"], script[src*="pixel"]');
-    console.log('[CONSENT] Found', analyticsScripts.length, 'other analytics scripts:');
-    analyticsScripts.forEach(function(script, index) {
-      console.log(`[CONSENT] Analytics script ${index}:`, {
-        src: script.src,
-        type: script.type,
-        isBlocked: script.type === 'text/plain'
-      });
-    });
-    
-    console.log('[CONSENT] === END SPECIFIC CHECKS ===');
-  }
-
-
-
-
-
-
 
 })();
